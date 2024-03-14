@@ -1,11 +1,111 @@
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import nodemailer from 'nodemailer';
-import { Config } from '../../../config/config.js';
-import { generateNewAccessToken, generateNewRefreshToken } from '../../utils/jwt.js';
+import { Config, Secrets } from '../../../config/config.js';
+import { generateNewAccessToken, generateNewRefreshToken, refreshAccessTokenFromRefreshToken, validateAccessToken } from '../../utils/jwt.js';
 import { findLastDocument, findOne, findOneAndUpdate, insertOne, updateOne } from '../mongodbService.js';
+import CryptoJS from 'crypto-js';
+
+// Function to check user details from ux to handle anonymous or logged in user
+export const checkUserDetails = async (req, res) => {
+    try {
+        const accessToken = req?.headers?.authorization?.split?.(' ')?.[1];
+        const refreshToken = req?.headers?.['x-refresh-token'];
+        if (accessToken && refreshToken) {
+            // Logged in user
+            const validateToken = await validateAccessToken(accessToken);
+            if (validateToken && validateToken?.status) {
+                res?.set(req?.headers);
+                // const exposedHeaders = Object.keys(headers).join(', ');
+                const exposedHeaders = [
+                    'authorization',
+                    'x-refresh-token',
+                    'x-access-token-expiry',
+                    'x-refresh-token-expiry',
+                    'x-anonymous-user',
+                ]?.join(', ');
+                res?.setHeader('x-anonymous-user', false);
+                res?.set('Access-Control-Expose-Headers', exposedHeaders);
+                const encryptedUserDetails = CryptoJS?.AES?.encrypt(
+                    JSON.stringify(validateToken?.validateResult),
+                    Secrets?.CRYPTOJS_SECRET,
+                )?.toString();
+                return res?.status(200)?.send({ status: true, message: 'Logged in user', data: encryptedUserDetails });
+            } else {
+                if (validateToken && validateToken?.error == 'Expired') {
+                    const refreshedToken = await refreshAccessTokenFromRefreshToken(refreshToken);
+                    if (refreshedToken && refreshedToken?.status) {
+                        // Set X-Token-Refreshed header in the response
+                        res.setHeader('x-token-refreshed', true);
+                        req.headers.authorization = `Bearer ${refreshedToken?.accessToken}`;
+                        res?.set(req?.headers);
+                        const exposedHeaders = [
+                            'authorization',
+                            'x-refresh-token',
+                            'x-access-token-expiry',
+                            'x-refresh-token-expiry',
+                            'x-anonymous-user',
+                        ]?.join();
+                        res?.setHeader('x-anonymous-user', false);
+                        res?.set('Access-Control-Expose-Headers', exposedHeaders);
+                        const tokenData = await validateAccessToken(refreshedToken?.accessToken);
+                        const encryptedUserDetails = CryptoJS?.AES?.encrypt(
+                            JSON.stringify(tokenData?.validateResult),
+                            Secrets?.CRYPTOJS_SECRET,
+                        )?.toString();
+                        return res.status(200).send({ status: true, message: 'Logged in user', data: encryptedUserDetails });
+                    } else {
+                        return await getAnonymousUserData(req, res);
+                    }
+                } else {
+                    return await getAnonymousUserData(req, res);
+                }
+            }
+        } else {
+            // Anonymous user
+            const anonymousUserData = await getAnonymousUserData(req, res);
+            return anonymousUserData;
+        }
+    } catch (err) {
+        console.log('Error in authService.checkUserDetails service', err);
+        return { status: false, message: 'Error in service' };
+    }
+};
+
+// Function which creates the access token data for anonymous user
+export const getAnonymousUserData = async (req, res) => {
+    try {
+        const accessTokenExpiryTime = Math.floor(Date.now() / 1000) + Config?.Access_Token_Expiry_Time;
+        const refreshTokenExpiryTime = Math.floor(Date.now() / 1000) + Config?.Refresh_Token_Expiry_Time;
+        const userId = crypto.randomUUID();
+        const anonymousUserData = {
+            userId,
+            isAnonymous: true,
+            isLoggedIn: false,
+            createdAt: Math.floor(Date.now() / 1000),
+            expiryTime: accessTokenExpiryTime,
+        };
+        const accessToken = await generateNewAccessToken(anonymousUserData);
+        const refreshToken = await generateNewRefreshToken(anonymousUserData);
+        const headers = {
+            authorization: `Bearer ${accessToken?.accessToken}`,
+            'x-refresh-token': refreshToken?.refreshToken,
+            'x-access-token-expiry': accessTokenExpiryTime,
+            'x-refresh-token-expiry': refreshTokenExpiryTime,
+            'x-anonymous-user': true,
+        };
+        res?.set(headers);
+        const exposedHeaders = Object.keys(headers).join(', ');
+        res?.set('Access-Control-Expose-Headers', exposedHeaders);
+        return res?.status(200)?.send({ status: true, message: 'Anonymous user', data: anonymousUserData });
+    } catch (err) {
+        console.log('Error in authService.getAnonymousUserData service', err);
+        throw err;
+    }
+};
 
 // Function which checks email to verify whether user is registered already or not
-const checkUserEmail = async (details) => {
+export const checkUserEmail = async (details) => {
     try {
         const { email } = details;
         const user = await findOne('User', { email });
@@ -45,7 +145,7 @@ const checkUserEmail = async (details) => {
 };
 
 // Added by Vishal Jagamani, to add new user in db
-const addNewUserInDB = async (email) => {
+export const addNewUserInDB = async (email) => {
     try {
         const lastDocument = await findLastDocument('User');
         const id = lastDocument && lastDocument?.length ? (lastDocument[0]._id += 1) : 1;
@@ -69,7 +169,7 @@ const addNewUserInDB = async (email) => {
 };
 
 // Function which send email with otp to user
-const sendEmailWithOTP = async (email, otp) => {
+export const sendEmailWithOTP = async (email, otp) => {
     try {
         const emailBody = Config?.Email_Config?.OTP_Verification_Email_Body?.replace('[otp]', otp);
         const sendEmail = await sendEmailWithNodeMailer(email, emailBody);
@@ -81,7 +181,7 @@ const sendEmailWithOTP = async (email, otp) => {
 };
 
 // Function which sends the email to user
-const sendEmailWithNodeMailer = async (email, emailBody) => {
+export const sendEmailWithNodeMailer = async (email, emailBody) => {
     try {
         const transporter = nodemailer?.createTransport({
             host: 'smtp.gmail.com',
@@ -107,7 +207,7 @@ const sendEmailWithNodeMailer = async (email, emailBody) => {
 };
 
 // Function to verify the otp entered by the user
-const verifyOTP = async (userId, otp) => {
+export const verifyOTP = async (userId, otp) => {
     try {
         const document = await findOne('User', { userId });
         if (document) {
@@ -136,7 +236,7 @@ const verifyOTP = async (userId, otp) => {
 };
 
 // Function to resend the otp for user
-const resendOTP = async (userId) => {
+export const resendOTP = async (userId) => {
     try {
         const userDetails = await findOne('User', { userId: parseInt(userId) });
         if (userDetails) {
@@ -165,7 +265,7 @@ const resendOTP = async (userId) => {
 };
 
 // Function which accepts the details of user with password and registers user in the app
-const userSignupDetails = async (req, res) => {
+export const userSignupDetails = async (req, res) => {
     try {
         const { userId, firstName, lastName, password } = req?.body;
         const encryptedPassword = await bcrypt?.hash(password, 10);
@@ -193,12 +293,14 @@ const userSignupDetails = async (req, res) => {
             const accessToken = await generateNewAccessToken(tokenData);
             const refreshToken = await generateNewRefreshToken(tokenData);
             const headers = {
-                Authorization: `Bearer ${accessToken?.accessToken}`,
-                'X-Refresh-Token': refreshToken?.refreshToken,
-                'X-Access-Token-Expiry': accessTokenExpiryTime,
-                'X-Refresh-Token-Expiry': refreshTokenExpiresIn,
+                authorization: `Bearer ${accessToken?.accessToken}`,
+                'x-refresh-token': refreshToken?.refreshToken,
+                'x-access-token-expiry': accessTokenExpiryTime,
+                'x-refresh-token-expiry': refreshTokenExpiresIn,
             };
             res?.set(headers);
+            const exposedHeaders = Object.keys(headers).join(', ');
+            res?.set('Access-Control-Expose-Headers', exposedHeaders);
             return res?.status(200)?.send({ status: true, message: 'User details registered successfully' });
         } else {
             return res?.status(200)?.send({ status: false, message: 'User details not registered' });
@@ -210,9 +312,9 @@ const userSignupDetails = async (req, res) => {
 };
 
 // Function which logins the user in the app
-const userLogin = async (req, res) => {
+export const userLogin = async (req, res) => {
     try {
-        const { userId, email, password } = req?.body;
+        const { userId, firstName, lastName, email, password } = req?.body;
         const userData = await findOne('User', { email });
         if (userData) {
             bcrypt?.compare(password, userData?.password, async (err, result) => {
@@ -225,7 +327,8 @@ const userLogin = async (req, res) => {
                         const refreshTokenExpiresIn = Math.floor(Date.now() / 1000) + 604800;
                         const tokenData = {
                             userId,
-                            name: userData?.name || null,
+                            firstName: userData?.firstName,
+                            lastName: userData?.lastName,
                             email: userData?.email || null,
                             isLoggedIn: true,
                             createdAt: Math.floor(Date.now() / 1000),
@@ -233,11 +336,17 @@ const userLogin = async (req, res) => {
                         };
                         const accessToken = await generateNewAccessToken(tokenData);
                         const refreshToken = await generateNewRefreshToken(tokenData);
-                        res.setHeader('Authorization', `Bearer ${accessToken?.accessToken}`);
-                        res.setHeader('X-Refresh-Token', refreshToken?.refreshToken);
-                        res.setHeader('X-Access-Token-Expiry', accessTokenExpiryTime);
-                        res.setHeader('X-Refresh-Token-Expiry', refreshTokenExpiresIn);
-                        return res?.status(200)?.send({ status: true, message: 'Login successfull' });
+                        const headers = {
+                            authorization: `Bearer ${accessToken?.accessToken}`,
+                            'x-refresh-token': refreshToken?.refreshToken,
+                            'x-access-token-expiry': accessTokenExpiryTime,
+                            'x-refresh-token-expiry': refreshTokenExpiresIn,
+                        };
+                        res?.set(headers);
+                        const exposedHeaders = Object.keys(headers).join(', ');
+                        res?.set('Access-Control-Expose-Headers', exposedHeaders);
+                        const encryptedUserDetails = CryptoJS?.AES?.encrypt(JSON.stringify(tokenData), Secrets?.CRYPTOJS_SECRET)?.toString();
+                        return res?.status(200)?.send({ status: true, message: 'Login successful', data: encryptedUserDetails });
                     } else {
                         return res?.status(200)?.send({ status: false, message: 'Wrong password' });
                     }
@@ -251,5 +360,3 @@ const userLogin = async (req, res) => {
         return res?.status(500)?.send({ status: false, message: 'Error in service' });
     }
 };
-
-export { addNewUserInDB, checkUserEmail, resendOTP, sendEmailWithNodeMailer, sendEmailWithOTP, userLogin, userSignupDetails, verifyOTP };

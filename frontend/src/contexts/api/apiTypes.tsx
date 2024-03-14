@@ -11,12 +11,16 @@ export interface EmailVerifyData {
 export interface UserSignUp {
   token: any
   data: any
+  status: boolean
 }
 
 export interface EmailVerifyPost {
   email: string
 }
 
+export interface ResendOtpPost {
+  userId: number
+}
 export interface OtpVerifyPost {
   userId: number
   otp: string
@@ -32,4 +36,12 @@ export interface UserPostData {
   lastName: string
   password: string
   confirmPassword: string
+}
+export interface GetDataType {
+  data: any
+  status: string
+  message: string
+}
+export interface SearchInputPost {
+  searchText: string
 }

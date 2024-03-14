@@ -2,35 +2,30 @@ import express from 'express';
 const router = express.Router();
 
 // Services
-import { linkSpotifyAccount, oauthCallback, spotifySearch } from '../../services/spotify/userService.js';
+import { checkUserFollowsPlaylist, getUserProfile } from '../../services/spotify/userService.js';
 import { verifyAccessToken } from '../../utils/jwt.js';
 
 // Middleware to handle authentication
-// router.use(verifyAccessToken);
+router.use(verifyAccessToken);
 
-// Micro routes
-router.get('/linkSpotifyAccount', async (req, res) => {
+// Get user profile details from spotify by user id
+router.get('/:id', async (req, res) => {
     try {
-        const response = await linkSpotifyAccount(req, res);
-        return response;
+        const { id } = req.params;
+        const response = await getUserProfile(id);
+        res.status(response?.statusCode).send(response?.data);
     } catch (err) {
         res.status(500).send(err);
     }
 });
 
-router.get('/oauthCallback', async (req, res) => {
+// Check whether spotify user follows playlist or not by playlist and user id
+router.get('/:id/followsPlaylist', async (req, res) => {
     try {
-        const response = await oauthCallback(req, res);
-        return response;
-    } catch (err) {
-        res.status(500).send(err);
-    }
-});
-
-router.post('/search', async (req, res) => {
-    try {
-        const response = await spotifySearch(req.body);
-        res.status(200).send(response);
+        const { id } = req.params;
+        const { playlistId } = req.query;
+        const response = await checkUserFollowsPlaylist(id, playlistId);
+        res.status(response?.statusCode).send(response?.data);
     } catch (err) {
         res.status(500).send(err);
     }
